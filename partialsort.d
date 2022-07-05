@@ -68,10 +68,10 @@ void main(string[] args){
 	foreach (i; 0 .. 10)
 		output = weirdAlgo(list, X);
 	
-	time = bench((){
+	/*time = bench((){
 		output = mergeSort!"a < b"(list)[X - 1];
 	}, runs);
-	writefln!"executed mergeSort, %d times:\n%s"(runs, time);
+	writefln!"executed mergeSort, %d times:\n%s"(runs, time);*/
 
 	time = bench((ref StopWatch sw){
 		ulong[] input = list.dup;
@@ -97,88 +97,54 @@ ulong[] getRand(ulong size){
 	return ret;
 }
 
-T weirdAlgo(alias less = "a < b", T)(T[] input, ulong count){
-	assert(count < input.length);
-
-	// populate selection with first count elements of input, sorted
-	T[] selection = mergeSort!less(input[0 .. count]);
-	// remove first count elements from input, to optimise
+T weirdAlgo(T)(T[] input, ulong count){
+	T[] selection = radixSort(input[0 .. count]);
 	input = input[count .. $];
-
 	T cmp = selection[$ - 1];
 	T[] temp;
 	temp.length = count;
 	ulong i;
 	foreach (num; input){
-		if (binaryFun!less(num, cmp)){
+		if (num < cmp){
 			temp[i ++] = num;
 			if (i == temp.length){
-				//selection = merge!less(selection, mergeSort!less(temp), count);
-				selection = merge!less(selection, radixSort(temp), count);
+				selection = mergeEq(selection, radixSort(temp));
 				i = 0;
 				cmp = selection[$ - 1];
 			}
 		}
 	}
-	if (i){
-		selection = merge!less(selection,
-						mergeSort!less(temp[0 .. i]),
-						count);
-	}
+	if (i)
+		selection = merge(selection, radixSort(temp[0 .. i]), count);
 	return selection[$ - 1];
 }
 
-T[] radixSort(uint N = 8, T)(T[] input) if (isNumeric!T){
-	static immutable T mask = (1 << N) - 1;
-	static immutable ubyte iterations = (T.sizeof * 8 / N) + (T.sizeof * 8 % N > 0);
-	size_t[] counts;
-	counts.length = 1 << N;
-	T[] output;
-	output.length = input.length;
-	foreach (iter; 0 .. iterations){
+T[] radixSort(T)(T[] input) if (isNumeric!T){
+	static immutable T mask = 255;
+	static immutable ubyte end = T.sizeof * 8;
+	size_t[256] counts;
+	T[] output = new T[input.length];
+	for (ubyte i = 0; i < end; i += 8){
 		counts[] = 0;
-		immutable ubyte shift = cast(ubyte)(iter * N);
-		immutable T remaining = input[0] >> shift;
-		bool isSorted = true;
-		// construct counts
-		foreach (val; input){
-			immutable T shifted = val >> shift;
-			isSorted = isSorted && shifted == remaining;
-			immutable uint digit = shifted & mask;
-			counts[digit] ++;
-		}
-		if (isSorted)
-			return input;
-		prefixSum(counts);
-		// construct output
-		foreach_reverse (val; input){
-			immutable uint digit = (val >> shift) & mask;
-			output[-- counts[digit]] = val;
-		}
-		// swap arrays
+		for (size_t j = 0; j < input.length; j ++)
+			++ counts[(input[j] >> i) & mask];
+		for (size_t j = 1; j < counts.length; j ++)
+			counts[j] += counts[j - 1];
+		foreach_reverse (val; input)
+			output[-- counts[(val >> i) & mask]] = val;
 		swap(input, output);
 	}
+	.destroy(counts);
 	return input;
 }
 
-void prefixSum(T)(T[] arr) if (isNumeric!T){
-	foreach (i; 1 .. arr.length)
-		arr[i] += arr[i - 1];
-}
-
-T[] mergeSort(alias less = "a < b", T)(T[] arr, ulong maxLen = 0){
-	if (arr.length == 1){
-		return arr;
-	}
-	if (arr.length == 2){
-		if (binaryFun!less(arr[0], arr[1]))
-			return arr;
-		return [arr[1], arr[0]];
-	}
-	ulong mid = (arr.length + 1) / 2;
-	return merge!less(mergeSort!less(arr[0 .. mid], maxLen),
-					mergeSort!less(arr[mid .. $], maxLen),
-					maxLen);
+/// Merge 2 sorted arrays of same length. discard second half
+T[] mergeEq(alias less = "a < b", T)(T[] A, T[] B){
+	T[] R;
+	R.length = A.length;
+	for (size_t i, a, b; i < R.length; i ++)
+		R[i] = A[a] < B[b] ? A[a ++] : B[b ++];
+	return R;
 }
 
 /// Merge 2 sorted arrays
