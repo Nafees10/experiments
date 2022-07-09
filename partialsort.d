@@ -6,6 +6,7 @@ import std.algorithm;
 import std.functional;
 import std.traits;
 import std.string;
+import std.parallelism;
 
 struct Times{
 	ulong min = ulong.max;
@@ -13,7 +14,8 @@ struct Times{
 	ulong total = 0;
 	ulong avg = 0;
 	string toString() const @safe pure{
-		return format!"min\tmax\tavg\ttotal\t/msecs\n%d\t%d\t%d\t%d"(min, max, avg, total);
+		return format!"min\tmax\tavg\ttotal\t/msecs\n%d\t%d\t%d\t%d"(
+			min, max, avg, total);
 	}
 }
 
@@ -57,36 +59,42 @@ void main(string[] args){
 		if (args.length > 3)
 			runs = args[3].to!ulong;
 	}catch (Exception){
-		writeln("crapass input. should be:\n[N] [X] [runs]");
+		writeln("args should be:\n[N] [X] [runs]");
 		return;
 	}
 
 	Times time;
 	ulong[] list = getRand(N);
-	ulong output;
-	// run few times to "warm up" cpu
+	ulong[] output;
+	// run few times, in case conservative cpu governor
 	foreach (i; 0 .. 10)
-		output = weirdAlgo(list, X);
-	
-	/*time = bench((){
-		output = mergeSort!"a < b"(list)[X - 1];
-	}, runs);
-	writefln!"executed mergeSort, %d times:\n%s"(runs, time);*/
+		output = partialSort(list, X);
 
+	output = list.dup;
 	time = bench((ref StopWatch sw){
-		ulong[] input = list.dup;
 		sw.start();
-		output = radixSort(input)[X - 1];
+		output = radixSort(output);
 		sw.stop();
+		output[] = list;
 	}, runs);
 	writefln!"executed radixSort, %d times:\n%s"(runs, time);
 
-	time = bench((){
-		output = weirdAlgo(list, X);
+	output = list.dup;
+	time = bench((ref StopWatch sw){
+		sw.start();
+		output = radixSortParallel(output);
+		sw.stop();
+		output[] = list;
 	}, runs);
-	writefln!"executed weirdAlgo, %d times:\n%s"(runs, time);
+	writefln!"executed radixSortParallel, %d times:\n%s"(runs, time);
+
+	time = bench((){
+		output = partialSort(list, X);
+	}, runs);
+	writefln!"executed partialSort, %d times:\n%s"(runs, time);
 
 	assert (isSorted(radixSort(list)));
+	assert (isSorted(radixSortParallel(list)));
 }
 
 ulong[] getRand(ulong size){
@@ -97,65 +105,67 @@ ulong[] getRand(ulong size){
 	return ret;
 }
 
-T weirdAlgo(T)(T[] input, ulong count){
-	T[] selection = radixSort(input[0 .. count]);
-	input = input[count .. $];
-	T cmp = selection[$ - 1];
+T[] partialSort(alias val = "a", T)(T[] input, ulong count){
+	T[] selection = radixSort!val(input[0 .. count]);
 	T[] temp;
 	temp.length = count;
+	T cmp = selection[$ - 1];
+
+	input = input[count .. $];
 	ulong i;
 	foreach (num; input){
 		if (num < cmp){
 			temp[i ++] = num;
 			if (i == temp.length){
-				selection = mergeEq(selection, radixSort(temp));
+				selection = mergeEq!val(selection, radixSort!val(temp));
 				i = 0;
 				cmp = selection[$ - 1];
 			}
 		}
 	}
 	if (i)
-		selection = merge(selection, radixSort(temp[0 .. i]), count);
-	return selection[$ - 1];
+		selection = merge!val(selection, radixSort!val(temp[0 .. i]), count);
+	return selection;
 }
 
-T[] radixSort(T)(T[] input) if (isNumeric!T){
-	static immutable T mask = 255;
+T[] radixSort(alias val = "a", T)(T[] input){
+	alias valGet = unaryFun!val;
 	static immutable ubyte end = T.sizeof * 8;
 	size_t[256] counts;
 	T[] output = new T[input.length];
 	for (ubyte i = 0; i < end; i += 8){
 		counts[] = 0;
-		for (size_t j = 0; j < input.length; j ++)
-			++ counts[(input[j] >> i) & mask];
-		for (size_t j = 1; j < counts.length; j ++)
+		foreach (val; input)
+			++ counts[(valGet(val) >> i) & 255];
+		foreach (j; 1 .. counts.length)
 			counts[j] += counts[j - 1];
 		foreach_reverse (val; input)
-			output[-- counts[(val >> i) & mask]] = val;
+			output[-- counts[(valGet(val) >> i) & 255]] = val;
 		swap(input, output);
 	}
-	.destroy(counts);
 	return input;
 }
 
 /// Merge 2 sorted arrays of same length. discard second half
-T[] mergeEq(alias less = "a < b", T)(T[] A, T[] B){
+T[] mergeEq(alias val = "a", T)(T[] A, T[] B){
+	alias valGet = unaryFun!val;
 	T[] R;
 	R.length = A.length;
 	for (size_t i, a, b; i < R.length; i ++)
-		R[i] = A[a] < B[b] ? A[a ++] : B[b ++];
+		R[i] = valGet(A[a]) < valGet(B[b]) ? A[a ++] : B[b ++];
 	return R;
 }
 
 /// Merge 2 sorted arrays
-T[] merge(alias less = "a < b", T)(T[] A, T[] B, ulong maxLen = 0){
+T[] merge(alias val = "a", T)(T[] A, T[] B, ulong maxLen = 0){
+	alias valGet = unaryFun!val;
 	T[] R;
 	R.length = maxLen && maxLen < A.length + B.length ? maxLen : A.length + B.length;
 
 	ulong a, b, i;
 	if (A.length && B.length){
 		while (i < R.length){
-			if (binaryFun!less(A[a], B[b])){
+			if (valGet(A[a]) < valGet(B[b])){
 				R[i ++] = A[a ++];
 				if (a == A.length)
 					break;
